@@ -202,12 +202,12 @@
 
                 cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
                 
-                // 🛠️ AJUSTE 1: Aumentamos el desenfoque para ignorar texturas pequeñas (de 5x5 a 9x9)
-                let ksize = new cv.Size(9, 9);
+                //ajustamos el desenfoque para ignorar texturas pequeñas ( 7x7)
+                let ksize = new cv.Size(7, 7);
                 cv.GaussianBlur(gray, blur, ksize, 0, 0, cv.BORDER_DEFAULT);
                 
-                // 🛠️ AJUSTE 2: Subimos los umbrales de contraste para ignorar sombras (de 50,150 a 80,200)
-                cv.Canny(blur, edges, 80, 200, 3, false);
+                //  umbrales de contraste para ignorar sombras (de 50,150 a 80,200)
+                cv.Canny(blur, edges, 50, 100, 3, false);
                 
                 let dilated = new cv.Mat();
                 cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
@@ -222,8 +222,8 @@
                     let cnt = contours.get(i);
                     let area = cv.contourArea(cnt);
                     
-                    // 🛠️ AJUSTE 3: Exigimos que la caja sea más grande para detectarla (de 2000 a 4500 píxeles)
-                    if (area > 4500) {
+                    //  3: Exigimos que la caja sea más grande para detectarla (de 2000 a 4500 píxeles)
+                    if (area > 3000) {
                         let rect = cv.boundingRect(cnt);
                         cajas.push(rect);
                         
