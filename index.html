@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medición de Almacén Nativa</title>
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+    
+    <style>
+        /* --- ESTILOS VISUALES (Basados en tu boceto) --- */
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            font-family: Arial, sans-serif; background-color: #000;
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+
+        #header-info {
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); z-index: 10;
+        }
+
+        .info-row {
+            display: flex; align-items: center; margin-bottom: 8px; font-size: 16px;
+        }
+
+        .info-row:last-child {
+            margin-bottom: 0; justify-content: space-between;
+        }
+
+        .status-dot {
+            height: 12px; width: 12px; background-color: #28a745; 
+            border-radius: 50%; display: inline-block; margin-left: 10px;
+        }
+        
+        /* Indicador de carga de OpenCV */
+        #status-opencv {
+            color: #d9534f; font-size: 12px; font-weight: bold; margin-left: auto;
+        }
+
+        .bold { font-weight: bold; margin-right: 5px; }
+
+        /* --- CONTENEDOR DE CÁMARA --- */
+        #camera-container {
+            flex-grow: 1; position: relative; width: 100%; background-color: #222;
+            display: flex; justify-content: center; align-items: center; overflow: hidden;
+        }
+
+        /* El video original está oculto, solo sirve para alimentar a OpenCV */
+        #video-feed {
+            display: none; 
+        }
+
+        /* El canvas es donde OpenCV dibujará el resultado final */
+        #overlay-canvas {
+            max-width: 100%; max-height: 100%; object-fit: contain;
+        }
+
+        /* --- PIE DE PÁGINA --- */
+        #footer-controls {
+            background-color: #fff; padding: 15px;
+            display: flex; justify-content: center; align-items: center; z-index: 10;
+        }
+
+        #btn-capturar {
+            background-color: #f0f0f0; border: 2px solid #333; border-radius: 25px;
+            padding: 15px 40px; font-size: 18px; font-weight: bold;
+            cursor: pointer; width: 80%; max-width: 300px;
+            transition: background-color 0.2s;
+        }
+
+        #btn-capturar:active { background-color: #ccc; }
+    </style>
+</head>
+<body>
+
+    <div id="header-info">
+        <div class="info-row">
+            <span class="bold">Espacio disponible</span>
+            <span class="status-dot"></span>
+            <span id="status-opencv">Cargando motor de visión...</span>
+        </div>
+        <div class="info-row">
+            <span class="bold">Medidas:</span> 
+            <span id="txt-medidas">Calculando...</span>
+        </div>
+        <div class="info-row">
+            <div><span class="bold"># Lote:</span> <span id="txt-lote">A-01</span></div>
+            <div><span class="bold">ID:</span> <span id="txt-id">1045</span></div>
+        </div>
+    </div>
+
+    <div id="camera-container">
+        <video id="video-feed" autoplay playsinline></video>
+        <canvas id="overlay-canvas"></canvas>
+    </div>
+
+    <div id="footer-controls">
+        <button id="btn-capturar" disabled>Capturar FoTO.</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('video-feed');
+        const canvas = document.getElementById('overlay-canvas');
+        const btnCapturar = document.getElementById('btn-capturar');
+        const statusText = document.getElementById('status-opencv');
+        
+        let streaming = false;
+        let src, dst, gray, blur, edges, kernel;
+        let cap;
+
+        // 1. Esta función se llama automáticamente cuando OpenCV.js termina de descargar
+        function onOpenCvReady() {
+            cv['onRuntimeInitialized'] = () => {
+                statusText.style.color = '#28a745';
+                statusText.innerText = "Sistema Listo";
+                btnCapturar.disabled = false;
+                iniciarCamara();
+            };
+        }
+
+        // 2. Encender la cámara del dispositivo
+        function iniciarCamara() {
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+                .then(function(stream) {
+                    video.srcObject = stream;
+                    video.play();
+                })
+                .catch(function(err) {
+                    console.error("Error al acceder a la cámara: ", err);
+                    alert("Por favor, permite el acceso a la cámara para medir los espacios.");
+                });
+
+            video.addEventListener('canplay', function(ev){
+                if (!streaming) {
+                    // Configurar el tamaño interno del video y canvas
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    canvas.width = video.width;
+                    canvas.height = video.height;
+                    
+                    // Inicializar matrices de OpenCV
+                    src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+                    dst = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+                    gray = new cv.Mat();
+                    blur = new cv.Mat();
+                    edges = new cv.Mat();
+                    kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+                    cap = new cv.VideoCapture(video);
+                    
+                    streaming = true;
+                    // Arrancar el bucle de procesamiento
+                    requestAnimationFrame(procesarFrame);
+                }
+            }, false);
+        }
+
+        // 3. El bucle de procesamiento (Equivalente a tu while True)
+        function procesarFrame() {
+            if (!streaming) return;
+
+            try {
+                // Leer frame del video
+                cap.read(src);
+                src.copyTo(dst); // Copiamos el original para dibujar encima
+
+                // Preprocesamiento
+                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+                let ksize = new cv.Size(5, 5);
+                cv.GaussianBlur(gray, blur, ksize, 0, 0, cv.BORDER_DEFAULT);
+                
+                // Detección de bordes
+                cv.Canny(blur, edges, 50, 150, 3, false);
+                
+                // Dilatar bordes
+                let dilated = new cv.Mat();
+                cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+
+                // Encontrar contornos
+                let contours = new cv.MatVector();
+                let hierarchy = new cv.Mat();
+                cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+                let cajas = [];
+
+                // Filtrar por área y dibujar cajas verdes
+                for (let i = 0; i < contours.size(); ++i) {
+                    let cnt = contours.get(i);
+                    let area = cv.contourArea(cnt);
+                    
+                    if (area > 2000) {
+                        let rect = cv.boundingRect(cnt);
+                        cajas.push(rect);
+                        
+                        // Rectángulo verde (RGBA: 0, 255, 0, 255)
+                        let pt1 = new cv.Point(rect.x, rect.y);
+                        let pt2 = new cv.Point(rect.x + rect.width, rect.y + rect.height);
+                        cv.rectangle(dst, pt1, pt2, [0, 255, 0, 255], 2);
+                    }
+                    // Importante liberar memoria del contorno temporal
+                    cnt.delete(); 
+                }
+
+                // Ordenar cajas de izquierda a derecha (por coordenada x)
+                cajas.sort((a, b) => a.x - b.x);
+
+                // Calcular espacios vacíos
+                for (let i = 0; i < cajas.length - 1; i++) {
+                    let c1 = cajas[i];
+                    let c2 = cajas[i+1];
+                    let espacio_vacio = c2.x - (c1.x + c1.width);
+
+                    if (espacio_vacio > 10) {
+                        // Línea roja (RGBA: 255, 0, 0, 255)
+                        let p1 = new cv.Point(c1.x + c1.width, Math.round(c1.y + c1.height / 2));
+                        let p2 = new cv.Point(c2.x, Math.round(c2.y + c2.height / 2));
+                        cv.line(dst, p1, p2, [255, 0, 0, 255], 2);
+
+                        // Texto con la medida
+                        let texto = `Hueco: ${espacio_vacio}px`;
+                        let origenTexto = new cv.Point(c1.x + c1.width, c1.y - 10);
+                        cv.putText(dst, texto, origenTexto, cv.FONT_HERSHEY_SIMPLEX, 0.5, [255, 0, 0, 255], 2);
+                    }
+                }
+
+                // Mostrar el resultado en el <canvas>
+                cv.imshow('overlay-canvas', dst);
+
+                // Liberar memoria temporal (Crucial en OpenCV.js)
+                dilated.delete();
+                contours.delete();
+                hierarchy.delete();
+
+                // Solicitar el siguiente frame
+                requestAnimationFrame(procesarFrame);
+
+            } catch (err) {
+                console.error("Error en el procesamiento: ", err);
+            }
+        }
+
+        // 4. Funcionalidad del botón capturar
+        btnCapturar.addEventListener('click', () => {
+            // Convierte lo que está en el canvas a una imagen descargable
+            const dataURL = canvas.toDataURL('image/jpeg', 0.9);
+            const a = document.createElement('a');
+            a.href = dataURL;
+            a.download = `captura_almacen_${new Date().getTime()}.jpg`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        });
+    </script>
+</body>
+</html>
