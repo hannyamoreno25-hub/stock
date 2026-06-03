@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medición de Almacén Impreso</title>
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+    
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            font-family: Arial, sans-serif; background-color: #000;
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+
+        #header-info {
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); z-index: 10;
+        }
+
+        .info-row {
+            display: flex; align-items: center; margin-bottom: 8px; font-size: 16px;
+        }
+
+        .info-row:last-child {
+            margin-bottom: 0; justify-content: space-between;
+        }
+
+        .status-dot {
+            height: 12px; width: 12px; background-color: #28a745; 
+            border-radius: 50%; display: inline-block; margin-left: 10px;
+        }
+        
+        #status-opencv {
+            color: #d9534f; font-size: 12px; font-weight: bold; margin-left: auto;
+        }
+
+        .bold { font-weight: bold; margin-right: 5px; }
+
+        #camera-container {
+            flex-grow: 1; position: relative; width: 100%; background-color: #222;
+            display: flex; justify-content: center; align-items: center; overflow: hidden;
+        }
+
+        #video-feed {
+            display: none; 
+        }
+
+        #overlay-canvas {
+            max-width: 100%; max-height: 100%; object-fit: contain;
+        }
+
+        #footer-controls {
+            background-color: #fff; padding: 15px;
+            display: flex; justify-content: center; align-items: center; z-index: 10;
+            gap: 15px; 
+        }
+
+        #btn-capturar {
+            background-color: #f0f0f0; border: 2px solid #333; border-radius: 25px;
+            padding: 15px 40px; font-size: 18px; font-weight: bold;
+            cursor: pointer; width: 60%; max-width: 300px;
+            transition: background-color 0.2s;
+        }
+
+        #btn-capturar:active { background-color: #ccc; }
+
+        #btn-voltear {
+            background-color: #333; color: white; border: none; border-radius: 25px;
+            padding: 15px 20px; font-size: 16px; font-weight: bold;
+            cursor: pointer; width: 35%; max-width: 150px;
+            transition: background-color 0.2s;
+        }
+
+        #btn-voltear:active { background-color: #555; }
+    </style>
+</head>
+<body>
+
+    <div id="header-info">
+        <div class="info-row">
+            <span class="bold">Lector de plano</span>
+            <span class="status-dot"></span>
+            <span id="status-opencv">Cargando motor...</span>
+        </div>
+        <div class="info-row">
+            <span class="bold">Medidas:</span> 
+            <span id="txt-medidas" style="color:#0066cc; font-weight:bold;">Escaneando hoja...</span>
+        </div>
+        <div class="info-row">
+            <div><span class="bold"># Lote:</span> <span id="txt-lote">A-01</span></div>
+            <div><span class="bold">ID:</span> <span id="txt-id">1045</span></div>
+        </div>
+    </div>
+
+    <div id="camera-container">
+        <video id="video-feed" autoplay playsinline></video>
+        <canvas id="overlay-canvas"></canvas>
+    </div>
+
+    <div id="footer-controls">
+        <button id="btn-voltear" disabled>🔄 Voltear</button>
+        <button id="btn-capturar" disabled>Capturar Foto</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('video-feed');
+        const canvas = document.getElementById('overlay-canvas');
+        const btnCapturar = document.getElementById('btn-capturar');
+        const btnVoltear = document.getElementById('btn-voltear');
+        const statusText = document.getElementById('status-opencv');
+        const txtMedidas = document.getElementById('txt-medidas');
+        
+        let streaming = false;
+        let src, dst, gray, blur, edges;
+        let cap;
+        
+        let currentStream = null;
+        let facingMode = "environment"; 
+
+        function onOpenCvReady() {
+            cv['onRuntimeInitialized'] = () => {
+                statusText.style.color = '#28a745';
+                statusText.innerText = "Sistema Listo";
+                btnCapturar.disabled = false;
+                btnVoltear.disabled = false;
+                iniciarCamara();
+            };
+        }
+
+        function detenerCamara() {
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+        }
+
+        function iniciarCamara() {
+            detenerCamara();
+
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode }, audio: false })
+                .then(function(stream) {
+                    currentStream = stream;
+                    video.srcObject = stream;
+                    video.play();
+                })
+                .catch(function(err) {
+                    console.error("Error al acceder a la cámara: ", err);
+                    alert("Por favor, permite el acceso a la cámara.");
+                });
+
+            video.addEventListener('canplay', function(ev){
+                if (streaming) {
+                    if (video.videoWidth !== canvas.width || video.videoHeight !== canvas.height) {
+                        video.width = video.videoWidth;
+                        video.height = video.videoHeight;
+                        canvas.width = video.width;
+                        canvas.height = video.height;
+                        
+                        if(src) src.delete();
+                        if(dst) dst.delete();
+                        if(gray) gray.delete();
+                        if(blur) blur.delete();
+                        if(edges) edges.delete();
+                        
+                        src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+                        dst = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+                        gray = new cv.Mat();
+                        blur = new cv.Mat();
+                        edges = new cv.Mat();
+                        cap = new cv.VideoCapture(video);
+                    }
+                    return; 
+                }
+
+                if (!streaming) {
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    canvas.width = video.width;
+                    canvas.height = video.height;
+                    
+                    src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+                    dst = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+                    gray = new cv.Mat();
+                    blur = new cv.Mat();
+                    edges = new cv.Mat();
+                    cap = new cv.VideoCapture(video);
+                    
+                    streaming = true;
+                    requestAnimationFrame(procesarFrame);
+                }
+            }, false);
+        }
+
+        btnVoltear.addEventListener('click', () => {
+            facingMode = (facingMode === "environment") ? "user" : "environment";
+            iniciarCamara();
+        });
+
+        function procesarFrame() {
+            if (!streaming) return;
+
+            // Instancias locales para evitar problemas de memoria en bucle
+            let kernel = cv.Mat.ones(30, 5, cv.CV_8U); // ⬅️ CAMBIO 2: Kernel muy alto para fusionar columnas
+            let dilated = new cv.Mat();
+            let contours = new cv.MatVector();
+            let hierarchy = new cv.Mat();
+
+            try {
+                cap.read(src);
+                src.copyTo(dst); 
+
+                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+                
+                // ⬅️ CAMBIO 1: Aumentamos el blur a 5x5 para ignorar la textura de la impresión
+                let ksize = new cv.Size(5, 5);
+                cv.GaussianBlur(gray, blur, ksize, 0, 0, cv.BORDER_DEFAULT);
+                
+                // Detección de bordes
+                cv.Canny(blur, edges, 50, 150, 3, false);
+                
+                // Aplicamos la dilatación para crear muros sólidos (columnas)
+                cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+
+                cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+                let columnas = [];
+
+                for (let i = 0; i < contours.size(); ++i) {
+                    let cnt = contours.get(i);
+                    let area = cv.contourArea(cnt);
+                    
+                    let rect = cv.boundingRect(cnt);
+
+                    // ⬅️ CAMBIO 3: Filtramos por área, pero también exigimos que sea una estructura alta (columna)
+                    // Ignoramos basuritas pequeñas en el papel
+                    if (area > 1500 && rect.height > 80) {
+                        columnas.push(rect);
+                    }
+                    cnt.delete(); 
+                }
+
+                columnas.sort((a, b) => a.x - b.x);
+
+                let textosInfo = [];
+
+                for (let i = 0; i < columnas.length - 1; i++) {
+                    let c1 = columnas[i];
+                    let c2 = columnas[i+1];
+                    
+                    // Calculamos el hueco entre la columna izquierda y la derecha
+                    let espacio_vacio = c2.x - (c1.x + c1.width);
+
+                    // Si detecta un hueco considerable
+                    if (espacio_vacio > 15) {
+                        // ⬅️ CAMBIO 4: Quitamos rectángulos y líneas. Solo ponemos el texto.
+                        let texto = `${espacio_vacio}px`;
+                        
+                        // Centramos el texto en el espacio vacío
+                        let centroX = (c1.x + c1.width) + (espacio_vacio / 2) - 15;
+                        let centroY = dst.rows / 2; // A la mitad de la altura de la cámara
+                        
+                        let origenTexto = new cv.Point(centroX, centroY);
+                        
+                        // Dibujamos el texto en un verde brillante para que resalte sobre el papel
+                        cv.putText(dst, texto, origenTexto, cv.FONT_HERSHEY_DUPLEX, 0.7, [0, 255, 0, 255], 2);
+                        
+                        textosInfo.push(`${espacio_vacio}px`);
+                    }
+                }
+
+                // Actualiza el menú superior con las medidas leídas de la hoja
+                txtMedidas.innerText = textosInfo.length > 0 ? textosInfo.join(" | ") : "Escaneando hoja...";
+
+                cv.imshow('overlay-canvas', dst);
+
+            } catch (err) {
+                // Silenciamos los errores temporales
+            } finally {
+                // Limpieza de memoria crucial para celulares
+                kernel.delete();
+                dilated.delete();
+                contours.delete();
+                hierarchy.delete();
+            }
+
+            requestAnimationFrame(procesarFrame);
+        }
+
+        btnCapturar.addEventListener('click', () => {
+            const dataURL = canvas.toDataURL('image/jpeg', 0.9);
+            const a = document.createElement('a');
+            a.href = dataURL;
+            a.download = `captura_impresion_${new Date().getTime()}.jpg`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        });
+    </script>
+</body>
+</html>
