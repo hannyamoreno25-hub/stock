@@ -28,4 +28,243 @@
         }
 
         .status-dot {
-            height: 12px; width: 12px; background-color: #2
+            height: 12px; width: 12px; background-color: #28a745; 
+            border-radius: 50%; display: inline-block; margin-left: 10px;
+        }
+        
+        #status-opencv {
+            color: #d9534f; font-size: 12px; font-weight: bold; margin-left: auto;
+        }
+
+        .bold { font-weight: bold; margin-right: 5px; }
+
+        /* --- CONTENEDOR DE CÁMARA --- */
+        #camera-container {
+            flex-grow: 1; position: relative; width: 100%; background-color: #222;
+            display: flex; justify-content: center; align-items: center; overflow: hidden;
+        }
+
+        #video-feed {
+            display: none; 
+        }
+
+        #overlay-canvas {
+            max-width: 100%; max-height: 100%; object-fit: contain;
+        }
+
+        /* --- PIE DE PÁGINA --- */
+        #footer-controls {
+            background-color: #fff; padding: 15px;
+            display: flex; justify-content: center; align-items: center; z-index: 10;
+            gap: 15px; /* Espacio entre los botones */
+        }
+
+        #btn-capturar {
+            background-color: #f0f0f0; border: 2px solid #333; border-radius: 25px;
+            padding: 15px 40px; font-size: 18px; font-weight: bold;
+            cursor: pointer; width: 60%; max-width: 300px;
+            transition: background-color 0.2s;
+        }
+
+        #btn-capturar:active { background-color: #ccc; }
+
+        #btn-voltear {
+            background-color: #333; color: white; border: none; border-radius: 25px;
+            padding: 15px 20px; font-size: 16px; font-weight: bold;
+            cursor: pointer; width: 35%; max-width: 150px;
+            transition: background-color 0.2s;
+        }
+
+        #btn-voltear:active { background-color: #555; }
+    </style>
+</head>
+<body>
+
+    <div id="header-info">
+        <div class="info-row">
+            <span class="bold">Espacio disponible</span>
+            <span class="status-dot"></span>
+            <span id="status-opencv">Cargando motor de visión...</span>
+        </div>
+        <div class="info-row">
+            <span class="bold">Medidas:</span> 
+            <span id="txt-medidas">Calculando...</span>
+        </div>
+        <div class="info-row">
+            <div><span class="bold"># Lote:</span> <span id="txt-lote">A-01</span></div>
+            <div><span class="bold">ID:</span> <span id="txt-id">1045</span></div>
+        </div>
+    </div>
+
+    <div id="camera-container">
+        <video id="video-feed" autoplay playsinline></video>
+        <canvas id="overlay-canvas"></canvas>
+    </div>
+
+    <div id="footer-controls">
+        <button id="btn-voltear" disabled>🔄 Voltear</button>
+        <button id="btn-capturar" disabled>Capturar FOTO.</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('video-feed');
+        const canvas = document.getElementById('overlay-canvas');
+        const btnCapturar = document.getElementById('btn-capturar');
+        const btnVoltear = document.getElementById('btn-voltear');
+        const statusText = document.getElementById('status-opencv');
+        const txtMedidas = document.getElementById('txt-medidas');
+        
+        let streaming = false;
+        let src, dst, gray, edges;
+        let cap;
+        
+        // Variables para la cámara dual
+        let currentStream = null;
+        let facingMode = "environment"; 
+
+        function onOpenCvReady() {
+            cv['onRuntimeInitialized'] = () => {
+                statusText.style.color = '#28a745';
+                statusText.innerText = "Sistema Listo";
+                btnCapturar.disabled = false;
+                btnVoltear.disabled = false;
+                iniciarCamara();
+            };
+        }
+
+        function detenerCamara() {
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+        }
+
+        function iniciarCamara() {
+            detenerCamara();
+
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode }, audio: false })
+                .then(function(stream) {
+                    currentStream = stream;
+                    video.srcObject = stream;
+                    video.play();
+                })
+                .catch(function(err) {
+                    console.error("Error al acceder a la cámara: ", err);
+                    alert("Por favor, permite el acceso a la cámara para medir los espacios.");
+                });
+
+            video.addEventListener('canplay', function(ev){
+                if (streaming) {
+                    if (video.videoWidth !== canvas.width || video.videoHeight !== canvas.height) {
+                        video.width = video.videoWidth;
+                        video.height = video.videoHeight;
+                        canvas.width = video.width;
+                        canvas.height = video.height;
+                        
+                        if(src) src.delete();
+                        if(dst) dst.delete();
+                        if(gray) gray.delete();
+                        if(edges) edges.delete();
+                        
+                        src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+                        dst = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+                        gray = new cv.Mat();
+                        edges = new cv.Mat();
+                        cap = new cv.VideoCapture(video);
+                    }
+                    return; 
+                }
+
+                if (!streaming) {
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    canvas.width = video.width;
+                    canvas.height = video.height;
+                    
+                    src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+                    dst = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+                    gray = new cv.Mat();
+                    edges = new cv.Mat();
+                    cap = new cv.VideoCapture(video);
+                    
+                    streaming = true;
+                    requestAnimationFrame(procesarFrame);
+                }
+            }, false);
+        }
+
+        btnVoltear.addEventListener('click', () => {
+            facingMode = (facingMode === "environment") ? "user" : "environment";
+            iniciarCamara();
+        });
+
+        function procesarFrame() {
+            if (!streaming) return;
+
+            try {
+                cap.read(src);
+                src.copyTo(dst); 
+
+                // 1. Convertir a escala de grises
+                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+                
+                // 2. Mejorar el contraste (ayuda con sombras en almacenes)
+                cv.equalizeHist(gray, gray);
+                
+                // 3. Detección de bordes (Canny)
+                cv.Canny(gray, edges, 50, 150, 3, false);
+                
+                // 4. Detectar líneas rectas usando Transformada de Hough
+                let lines = new cv.Mat();
+                // Parámetros: imagen borde, matriz salida, rho, theta, threshold, minLineLength, maxLineGap
+                cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 50, 50, 10);
+
+                let conteoDivisiones = 0;
+
+                // 5. Filtrar y dibujar SOLO las líneas horizontales
+                for (let i = 0; i < lines.rows; ++i) {
+                    let x1 = lines.data32S[i * 4];
+                    let y1 = lines.data32S[i * 4 + 1];
+                    let x2 = lines.data32S[i * 4 + 2];
+                    let y2 = lines.data32S[i * 4 + 3];
+                    
+                    // Calcular ángulo
+                    let angle = Math.abs(Math.atan2(y2 - y1, x2 - x1) * 180.0 / Math.PI);
+                    
+                    // Si el ángulo es cercano a 0 o 180 grados, es horizontal
+                    if (angle < 15 || angle > 165) { 
+                        let pt1 = new cv.Point(x1, y1);
+                        let pt2 = new cv.Point(x2, y2);
+                        // Dibujar línea roja gruesa en la separación
+                        cv.line(dst, pt1, pt2, [255, 0, 0, 255], 3);
+                        conteoDivisiones++;
+                    }
+                }
+                
+                // Actualizar interfaz de usuario
+                txtMedidas.innerText = `${conteoDivisiones} divisiones detectadas`;
+
+                // Mostrar resultado en el canvas
+                cv.imshow('overlay-canvas', dst);
+
+                // Liberar memoria de la matriz temporal
+                lines.delete();
+
+                requestAnimationFrame(procesarFrame);
+
+            } catch (err) {
+                // Silenciamos los errores temporales al cambiar de cámara
+            }
+        }
+
+        btnCapturar.addEventListener('click', () => {
+            const dataURL = canvas.toDataURL('image/jpeg', 0.9);
+            const a = document.createElement('a');
+            a.href = dataURL;
+            a.download = `captura_almacen_${new Date().getTime()}.jpg`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        });
+    </script>
+</body>
+</html>
