@@ -3,10 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Medición de Almacén Impreso - Calibración</title>
+    <title>Medición de Almacén Nativa - Tamaño Carta</title>
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
     
     <style>
+        /* --- ESTILOS VISUALES --- */
         body, html {
             margin: 0; padding: 0; width: 100%; height: 100%;
             font-family: Arial, sans-serif; background-color: #000;
@@ -37,6 +38,7 @@
 
         .bold { font-weight: bold; margin-right: 5px; }
 
+        /* --- CONTENEDOR DE CÁMARA --- */
         #camera-container {
             flex-grow: 1; position: relative; width: 100%; background-color: #222;
             display: flex; justify-content: center; align-items: center; overflow: hidden;
@@ -50,10 +52,11 @@
             max-width: 100%; max-height: 100%; object-fit: contain;
         }
 
+        /* --- PIE DE PÁGINA --- */
         #footer-controls {
             background-color: #fff; padding: 15px;
             display: flex; justify-content: center; align-items: center; z-index: 10;
-            gap: 15px; 
+            gap: 15px;
         }
 
         #btn-capturar {
@@ -79,13 +82,13 @@
 
     <div id="header-info">
         <div class="info-row">
-            <span class="bold">Lector de plano</span>
+            <span class="bold">Espacio disponible</span>
             <span class="status-dot"></span>
-            <span id="status-opencv">Cargando motor...</span>
+            <span id="status-opencv">Cargando motor de visión...</span>
         </div>
         <div class="info-row">
             <span class="bold">Medidas:</span> 
-            <span id="txt-medidas" style="color:#0066cc; font-weight:bold;">Escaneando...</span>
+            <span id="txt-medidas">Calculando...</span>
         </div>
         <div class="info-row">
             <div><span class="bold"># Lote:</span> <span id="txt-lote">A-01</span></div>
@@ -109,12 +112,12 @@
         const btnCapturar = document.getElementById('btn-capturar');
         const btnVoltear = document.getElementById('btn-voltear');
         const statusText = document.getElementById('status-opencv');
-        const txtMedidas = document.getElementById('txt-medidas');
         
         let streaming = false;
-        let src, dst, gray, blur, edges;
+        let src, dst, gray, blur, edges, kernel;
         let cap;
         
+        // Variables para la cámara dual
         let currentStream = null;
         let facingMode = "environment"; 
 
@@ -145,7 +148,7 @@
                 })
                 .catch(function(err) {
                     console.error("Error al acceder a la cámara: ", err);
-                    alert("Por favor, permite el acceso a la cámara.");
+                    alert("Por favor, permite el acceso a la cámara para medir los espacios.");
                 });
 
             video.addEventListener('canplay', function(ev){
@@ -158,15 +161,8 @@
                         
                         if(src) src.delete();
                         if(dst) dst.delete();
-                        if(gray) gray.delete();
-                        if(blur) blur.delete();
-                        if(edges) edges.delete();
-                        
                         src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
                         dst = new cv.Mat(video.height, video.width, cv.CV_8UC4);
-                        gray = new cv.Mat();
-                        blur = new cv.Mat();
-                        edges = new cv.Mat();
                         cap = new cv.VideoCapture(video);
                     }
                     return; 
@@ -183,6 +179,7 @@
                     gray = new cv.Mat();
                     blur = new cv.Mat();
                     edges = new cv.Mat();
+                    kernel = cv.Mat.ones(3, 3, cv.CV_8U);
                     cap = new cv.VideoCapture(video);
                     
                     streaming = true;
@@ -199,38 +196,37 @@
         function procesarFrame() {
             if (!streaming) return;
 
-            let kernel = cv.Mat.ones(30, 5, cv.CV_8U); 
-            let dilated = new cv.Mat();
-            let contours = new cv.MatVector();
-            let hierarchy = new cv.Mat();
-
             try {
                 cap.read(src);
                 src.copyTo(dst); 
 
                 cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
                 
-                let ksize = new cv.Size(5, 5);
+                // 🛠️ AJUSTE 1: Desenfoque suave para no borrar las líneas del tamaño carta
+                let ksize = new cv.Size(3, 3);
                 cv.GaussianBlur(gray, blur, ksize, 0, 0, cv.BORDER_DEFAULT);
                 
+                // 🛠️ AJUSTE 2: Bajamos los umbrales para captar mejor la tinta en el papel
                 cv.Canny(blur, edges, 50, 150, 3, false);
                 
+                let dilated = new cv.Mat();
                 cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
 
+                let contours = new cv.MatVector();
+                let hierarchy = new cv.Mat();
                 cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-                let columnas = [];
+                let cajas = [];
 
                 for (let i = 0; i < contours.size(); ++i) {
                     let cnt = contours.get(i);
                     let area = cv.contourArea(cnt);
-                    let rect = cv.boundingRect(cnt);
-
-                    // Filtros adaptados para la escala de la hoja impresa
-                    if (area > 1500 && rect.height > 80) {
-                        columnas.push(rect);
+                    
+                    // 🛠️ AJUSTE 3: Reducimos el área requerida (de 4500 a 300 píxeles)
+                    if (area > 300) {
+                        let rect = cv.boundingRect(cnt);
+                        cajas.push(rect);
                         
-                        // 🟢 REGRESAN LOS RECUADROS VERDES: Dibuja el contorno de la columna detectada
                         let pt1 = new cv.Point(rect.x, rect.y);
                         let pt2 = new cv.Point(rect.x + rect.width, rect.y + rect.height);
                         cv.rectangle(dst, pt1, pt2, [0, 255, 0, 255], 2);
@@ -238,55 +234,42 @@
                     cnt.delete(); 
                 }
 
-                columnas.sort((a, b) => a.x - b.x);
+                cajas.sort((a, b) => a.x - b.x);
 
-                let textosInfo = [];
-
-                for (let i = 0; i < columnas.length - 1; i++) {
-                    let c1 = columnas[i];
-                    let c2 = columnas[i+1];
-                    
+                for (let i = 0; i < cajas.length - 1; i++) {
+                    let c1 = cajas[i];
+                    let c2 = cajas[i+1];
                     let espacio_vacio = c2.x - (c1.x + c1.width);
 
-                    if (espacio_vacio > 15) {
-                        // 🔴 REGRESAN LAS LÍNEAS ROJAS: Trazamos la distancia entre columnas
+                    if (espacio_vacio > 10) {
                         let p1 = new cv.Point(c1.x + c1.width, Math.round(c1.y + c1.height / 2));
                         let p2 = new cv.Point(c2.x, Math.round(c2.y + c2.height / 2));
                         cv.line(dst, p1, p2, [255, 0, 0, 255], 2);
 
-                        // Colocamos el texto con los píxeles flotando sobre la línea
-                        let texto = `${espacio_vacio}px`;
-                        let centroX = (c1.x + c1.width) + (espacio_vacio / 2) - 15;
-                        let centroY = Math.round(c1.y + c1.height / 2) - 10;
-                        let origenTexto = new cv.Point(centroX, centroY);
-                        
-                        cv.putText(dst, texto, origenTexto, cv.FONT_HERSHEY_DUPLEX, 0.6, [255, 255, 255, 255], 1);
-                        
-                        textosInfo.push(`${espacio_vacio}px`);
+                        let texto = `Hueco: ${espacio_vacio}px`;
+                        let origenTexto = new cv.Point(c1.x + c1.width, c1.y - 10);
+                        cv.putText(dst, texto, origenTexto, cv.FONT_HERSHEY_SIMPLEX, 0.5, [255, 0, 0, 255], 2);
                     }
                 }
 
-                txtMedidas.innerText = textosInfo.length > 0 ? textosInfo.join(" | ") : "Escaneando hoja...";
-
                 cv.imshow('overlay-canvas', dst);
 
-            } catch (err) {
-                // Control de excepciones de renderizado
-            } finally {
-                kernel.delete();
                 dilated.delete();
                 contours.delete();
                 hierarchy.delete();
-            }
 
-            requestAnimationFrame(procesarFrame);
+                requestAnimationFrame(procesarFrame);
+
+            } catch (err) {
+                // Silenciamos los errores temporales al cambiar de cámara
+            }
         }
 
         btnCapturar.addEventListener('click', () => {
             const dataURL = canvas.toDataURL('image/jpeg', 0.9);
             const a = document.createElement('a');
             a.href = dataURL;
-            a.download = `captura_calibracion_${new Date().getTime()}.jpg`;
+            a.download = `captura_almacen_${new Date().getTime()}.jpg`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
