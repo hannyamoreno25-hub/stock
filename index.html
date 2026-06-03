@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Medición de Almacén Impreso</title>
+    <title>Medición de Almacén Impreso - Calibración</title>
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
     
     <style>
@@ -85,7 +85,7 @@
         </div>
         <div class="info-row">
             <span class="bold">Medidas:</span> 
-            <span id="txt-medidas" style="color:#0066cc; font-weight:bold;">Escaneando hoja...</span>
+            <span id="txt-medidas" style="color:#0066cc; font-weight:bold;">Escaneando...</span>
         </div>
         <div class="info-row">
             <div><span class="bold"># Lote:</span> <span id="txt-lote">A-01</span></div>
@@ -199,8 +199,7 @@
         function procesarFrame() {
             if (!streaming) return;
 
-            // Instancias locales para evitar problemas de memoria en bucle
-            let kernel = cv.Mat.ones(30, 5, cv.CV_8U); // ⬅️ CAMBIO 2: Kernel muy alto para fusionar columnas
+            let kernel = cv.Mat.ones(30, 5, cv.CV_8U); 
             let dilated = new cv.Mat();
             let contours = new cv.MatVector();
             let hierarchy = new cv.Mat();
@@ -211,14 +210,11 @@
 
                 cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
                 
-                // ⬅️ CAMBIO 1: Aumentamos el blur a 5x5 para ignorar la textura de la impresión
                 let ksize = new cv.Size(5, 5);
                 cv.GaussianBlur(gray, blur, ksize, 0, 0, cv.BORDER_DEFAULT);
                 
-                // Detección de bordes
                 cv.Canny(blur, edges, 50, 150, 3, false);
                 
-                // Aplicamos la dilatación para crear muros sólidos (columnas)
                 cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
 
                 cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
@@ -228,13 +224,16 @@
                 for (let i = 0; i < contours.size(); ++i) {
                     let cnt = contours.get(i);
                     let area = cv.contourArea(cnt);
-                    
                     let rect = cv.boundingRect(cnt);
 
-                    // ⬅️ CAMBIO 3: Filtramos por área, pero también exigimos que sea una estructura alta (columna)
-                    // Ignoramos basuritas pequeñas en el papel
+                    // Filtros adaptados para la escala de la hoja impresa
                     if (area > 1500 && rect.height > 80) {
                         columnas.push(rect);
+                        
+                        // 🟢 REGRESAN LOS RECUADROS VERDES: Dibuja el contorno de la columna detectada
+                        let pt1 = new cv.Point(rect.x, rect.y);
+                        let pt2 = new cv.Point(rect.x + rect.width, rect.y + rect.height);
+                        cv.rectangle(dst, pt1, pt2, [0, 255, 0, 255], 2);
                     }
                     cnt.delete(); 
                 }
@@ -247,36 +246,33 @@
                     let c1 = columnas[i];
                     let c2 = columnas[i+1];
                     
-                    // Calculamos el hueco entre la columna izquierda y la derecha
                     let espacio_vacio = c2.x - (c1.x + c1.width);
 
-                    // Si detecta un hueco considerable
                     if (espacio_vacio > 15) {
-                        // ⬅️ CAMBIO 4: Quitamos rectángulos y líneas. Solo ponemos el texto.
+                        // 🔴 REGRESAN LAS LÍNEAS ROJAS: Trazamos la distancia entre columnas
+                        let p1 = new cv.Point(c1.x + c1.width, Math.round(c1.y + c1.height / 2));
+                        let p2 = new cv.Point(c2.x, Math.round(c2.y + c2.height / 2));
+                        cv.line(dst, p1, p2, [255, 0, 0, 255], 2);
+
+                        // Colocamos el texto con los píxeles flotando sobre la línea
                         let texto = `${espacio_vacio}px`;
-                        
-                        // Centramos el texto en el espacio vacío
                         let centroX = (c1.x + c1.width) + (espacio_vacio / 2) - 15;
-                        let centroY = dst.rows / 2; // A la mitad de la altura de la cámara
-                        
+                        let centroY = Math.round(c1.y + c1.height / 2) - 10;
                         let origenTexto = new cv.Point(centroX, centroY);
                         
-                        // Dibujamos el texto en un verde brillante para que resalte sobre el papel
-                        cv.putText(dst, texto, origenTexto, cv.FONT_HERSHEY_DUPLEX, 0.7, [0, 255, 0, 255], 2);
+                        cv.putText(dst, texto, origenTexto, cv.FONT_HERSHEY_DUPLEX, 0.6, [255, 255, 255, 255], 1);
                         
                         textosInfo.push(`${espacio_vacio}px`);
                     }
                 }
 
-                // Actualiza el menú superior con las medidas leídas de la hoja
                 txtMedidas.innerText = textosInfo.length > 0 ? textosInfo.join(" | ") : "Escaneando hoja...";
 
                 cv.imshow('overlay-canvas', dst);
 
             } catch (err) {
-                // Silenciamos los errores temporales
+                // Control de excepciones de renderizado
             } finally {
-                // Limpieza de memoria crucial para celulares
                 kernel.delete();
                 dilated.delete();
                 contours.delete();
@@ -290,7 +286,7 @@
             const dataURL = canvas.toDataURL('image/jpeg', 0.9);
             const a = document.createElement('a');
             a.href = dataURL;
-            a.download = `captura_impresion_${new Date().getTime()}.jpg`;
+            a.download = `captura_calibracion_${new Date().getTime()}.jpg`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
