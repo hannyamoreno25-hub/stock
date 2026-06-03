@@ -56,7 +56,7 @@
         #footer-controls {
             background-color: #fff; padding: 15px;
             display: flex; justify-content: center; align-items: center; z-index: 10;
-            gap: 15px; /* Espacio entre los botones */
+            gap: 15px;
         }
 
         #btn-capturar {
@@ -82,13 +82,13 @@
 
     <div id="header-info">
         <div class="info-row">
-            <span class="bold">Espacio disponible</span>
+            <span class="bold">Estado del sensor</span>
             <span class="status-dot"></span>
             <span id="status-opencv">Cargando motor de visión...</span>
         </div>
         <div class="info-row">
-            <span class="bold">Medidas:</span> 
-            <span id="txt-medidas">Calculando...</span>
+            <span class="bold">Espacios detectados:</span> 
+            <span id="txt-medidas" style="color: #0066cc; font-weight: bold;">Calculando...</span>
         </div>
         <div class="info-row">
             <div><span class="bold"># Lote:</span> <span id="txt-lote">A-01</span></div>
@@ -103,7 +103,7 @@
 
     <div id="footer-controls">
         <button id="btn-voltear" disabled>🔄 Voltear</button>
-        <button id="btn-capturar" disabled>Capturar FOTO.</button>
+        <button id="btn-capturar" disabled>Capturar FOTO</button>
     </div>
 
     <script>
@@ -118,7 +118,6 @@
         let src, dst, gray, edges;
         let cap;
         
-        // Variables para la cámara dual
         let currentStream = null;
         let facingMode = "environment"; 
 
@@ -148,8 +147,8 @@
                     video.play();
                 })
                 .catch(function(err) {
-                    console.error("Error al acceder a la cámara: ", err);
-                    alert("Por favor, permite el acceso a la cámara para medir los espacios.");
+                    console.error("Error cámara: ", err);
+                    alert("Por favor, permite el acceso a la cámara.");
                 });
 
             video.addEventListener('canplay', function(ev){
@@ -200,60 +199,92 @@
         function procesarFrame() {
             if (!streaming) return;
 
+            // Variables locales para gestionar la memoria en cada frame
+            let contoursLocal = new cv.MatVector();
+            let hierarchyLocal = new cv.Mat();
+            // Kernel diseñado para unir las hojas verticalmente y formar columnas
+            let kernelLocal = cv.Mat.ones(25, 3, cv.CV_8U); 
+
             try {
                 cap.read(src);
                 src.copyTo(dst); 
 
-                // 1. Convertir a escala de grises
                 cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
                 
-                // 2. Mejorar el contraste (ayuda con sombras en almacenes)
-                cv.equalizeHist(gray, gray);
+                // 1. Desenfocar para ignorar pequeñas texturas del papel
+                let ksize = new cv.Size(5, 5);
+                cv.GaussianBlur(gray, gray, ksize, 0, 0, cv.BORDER_DEFAULT);
                 
-                // 3. Detección de bordes (Canny)
-                cv.Canny(gray, edges, 50, 150, 3, false);
+                // 2. Binarización de Otsu (Separa automáticamente el papel claro del fondo oscuro)
+                cv.threshold(gray, edges, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
                 
-                // 4. Detectar líneas rectas usando Transformada de Hough
-                let lines = new cv.Mat();
-                // Parámetros: imagen borde, matriz salida, rho, theta, threshold, minLineLength, maxLineGap
-                cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 50, 50, 10);
+                // 3. Dilatación: Convierte las pilas de hojas en bloques (columnas) unificados
+                cv.dilate(edges, edges, kernelLocal);
 
-                let conteoDivisiones = 0;
+                // 4. Encontrar el contorno de esas columnas
+                cv.findContours(edges, contoursLocal, hierarchyLocal, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-                // 5. Filtrar y dibujar SOLO las líneas horizontales
-                for (let i = 0; i < lines.rows; ++i) {
-                    let x1 = lines.data32S[i * 4];
-                    let y1 = lines.data32S[i * 4 + 1];
-                    let x2 = lines.data32S[i * 4 + 2];
-                    let y2 = lines.data32S[i * 4 + 3];
+                let columnas = [];
+
+                for (let i = 0; i < contoursLocal.size(); ++i) {
+                    let cnt = contoursLocal.get(i);
+                    let area = cv.contourArea(cnt);
                     
-                    // Calcular ángulo
-                    let angle = Math.abs(Math.atan2(y2 - y1, x2 - x1) * 180.0 / Math.PI);
+                    // 5. Filtrar áreas pequeñas para evitar detectar sombras como columnas
+                    if (area > 4000) {
+                        let rect = cv.boundingRect(cnt);
+                        // Asegurar que lo detectado tiene una altura decente
+                        if (rect.height > 100) {
+                            columnas.push(rect);
+                        }
+                    }
+                    cnt.delete(); // Limpiar contorno iterado
+                }
+
+                // 6. Ordenar las columnas detectadas de izquierda a derecha
+                columnas.sort((a, b) => a.x - b.x);
+
+                let infoMedidas = [];
+
+                // 7. Calcular los huecos entre las columnas
+                for (let i = 0; i < columnas.length - 1; i++) {
+                    let col1 = columnas[i];
+                    let col2 = columnas[i+1];
                     
-                    // Si el ángulo es cercano a 0 o 180 grados, es horizontal
-                    if (angle < 15 || angle > 165) { 
-                        let pt1 = new cv.Point(x1, y1);
-                        let pt2 = new cv.Point(x2, y2);
-                        // Dibujar línea roja gruesa en la separación
-                        cv.line(dst, pt1, pt2, [255, 0, 0, 255], 3);
-                        conteoDivisiones++;
+                    // Calcular la distancia: (Inicio de col2) - (Fin de col1)
+                    let espacio_vacio = col2.x - (col1.x + col1.width);
+
+                    // Si hay una separación real de más de 10 píxeles
+                    if (espacio_vacio > 10) {
+                        let texto = `${espacio_vacio}px`;
+                        
+                        // Posicionar el texto en medio del hueco y al centro vertical de la pantalla
+                        let centroX = (col1.x + col1.width) + (espacio_vacio / 2) - 20;
+                        let centroY = dst.rows / 2;
+                        let origenTexto = new cv.Point(centroX, centroY);
+                        
+                        // Solo dibujar texto flotante
+                        cv.putText(dst, texto, origenTexto, cv.FONT_HERSHEY_SIMPLEX, 0.7, [0, 255, 0, 255], 2);
+                        
+                        infoMedidas.push(`${espacio_vacio}px`);
                     }
                 }
-                
-                // Actualizar interfaz de usuario
-                txtMedidas.innerText = `${conteoDivisiones} divisiones detectadas`;
 
-                // Mostrar resultado en el canvas
+                // Actualizar el texto superior con todos los huecos detectados
+                txtMedidas.innerText = infoMedidas.length > 0 ? infoMedidas.join(" | ") : "0 huecos";
+
                 cv.imshow('overlay-canvas', dst);
 
-                // Liberar memoria de la matriz temporal
-                lines.delete();
-
-                requestAnimationFrame(procesarFrame);
-
             } catch (err) {
-                // Silenciamos los errores temporales al cambiar de cámara
+                // Silenciamos errores de interrupción del frame
+            } finally {
+                // Obligatorio para evitar memory leaks (congelamiento de cámara)
+                contoursLocal.delete();
+                hierarchyLocal.delete();
+                kernelLocal.delete();
             }
+
+            requestAnimationFrame(procesarFrame);
         }
 
         btnCapturar.addEventListener('click', () => {
